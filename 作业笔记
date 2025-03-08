@@ -1,0 +1,310 @@
+# 作业笔记
+
+<details>
+  <summary>📖 目录</summary>
+
+- [任务核心目标](#任务核心目标)
+- [代码框架解析](#代码框架解析)
+- [TODO指南](#todo指南)
+  - [Task 3实现文件存储](#task-3实现文件存储)
+  - [Task 4表之间的关联](#task-4表之间的关联)
+  - [Task 7-8解析查询语言](#task-7-8解析查询语言)
+
+</details>
+
+## 任务核心目标 
+
+1. 实现数据库服务端
+  - 接收类似SQL查询命令，比如`CREATE`、`SELECT`、`INSERT`。
+  - 解析命令并操作内存中的数据库结构。
+  - 持久化保存数据到文件系统，保存成用TAB键分隔的文本文件。
+  - 返回`[OK]`或者`[ERROR]`的格式的响应。
+
+## 代码框架解析 
+
+1. DBServer：数据库服务端主类：
+  - `main()`启动服务器，创建了一个新的`DBServer`对象，`server.blockingListenOn(8888);`调用方法，开始监听端口`8888`.
+  - 构造函数：`public DBServer()`
+```java
+// 初始化DBServer对象
+public DBServer() {
+    storageFolderPath = Paths.get("databases").toAbsolutePath().toString(); // 获取当前工作目录下的databases文件夹的绝对路径，并将其赋值给storageFolderPath
+    try {
+        Files.createDirectories(Paths.get(storageFolderPath)); // 如果文件夹不存在就创建databases文件夹
+    } catch(IOException ioe) { // 如果创建文件夹时发生错误，捕获异常并打印错误信息
+        System.out.println("Can't seem to create database storage folder " + storageFolderPath);
+    }
+}
+```
+  - `handleCommand()`处理客户端发送的命令。
+  - `blockingListenOn`方法用于在指定的端口上监听客户端连接：
+```java
+public void blockingListenOn(int portNumber) throws IOException {
+    try (ServerSocket s = new ServerSocket(portNumber)) { // 创建一个ServerSocket对象，监听指定的端口
+        System.out.println("Server listening on port " + portNumber); // 打印服务器正在监听的端口号
+        while (!Thread.interrupted()) { // 在一个无限循环中等待客户端连接，直到线程被中断
+            try {
+                blockingHandleConnection(s); // 调用blockingHandleConnection方法处理客户端连接
+            } catch (IOException e) {  // 如果在处理连接时发生IO错误，捕获异常并打印错误信息，然后继续运行
+                System.err.println("Server encountered a non-fatal IO error:");
+                e.printStackTrace();
+                System.err.println("Continuing...");
+            }
+        }
+    }
+}
+```
+  - `blockingHandleConnection`方法用于处理单个客户端连接：
+```java
+private void blockingHandleConnection(ServerSocket serverSocket) throws IOException {
+    try (Socket s = serverSocket.accept(); // 接受客户端的连接，并创建Socket对象 s。同时创建BufferedReader和BufferedWriter对象，用于读取客户端发送的数据和向客户端发送数据
+         BufferedReader reader = new BufferedReader(new InputStreamReader(s.getInputStream()));
+         BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(s.getOutputStream()))) {
+
+        System.out.println("Connection established: " + serverSocket.getInetAddress()); // 打印客户端连接的IP地址
+        while (!Thread.interrupted()) {
+            String incomingCommand = reader.readLine();
+            System.out.println("Received message: " + incomingCommand);  // 读取客户端发送的命令
+            String result = handleCommand(incomingCommand); // 打印接收到的命令
+            writer.write(result);
+            writer.write("\n" + END_OF_TRANSMISSION + "\n");
+            writer.flush(); // 刷新输出流，确保数据被发送到客户端
+        }
+    }
+}
+```
+
+
+2. DBClient：命令行客户端工具：
+  - 属性里，`private static final char END_OF_TRANSMISSION = 4;`表示该变量仅在当前类内部可见，`static`该变量属于类级别，而不是对象级别，所有instance共用同一个变量，即使没有创建任何对象，该变量也可以通过类名直接访问，`final`该变量是常量，不可以修改，`END_OF_TRANSMISSION`是一个ASCII控制字符（EOT，ASCII码为4），表示数据传输结束，Server在响应末尾发送此字符，Client读到该字符后停止接收响应。
+  - `main()`启动客户端：`BufferedReader`用于高效读取字符输入流，从标准输入比如键盘读取数据，`InputStreamReader`与`Scanner`的区别在于它是字节流转换成字符流，仅转换编码，不解析数据，适用于网络通信、原始字节流处理，`Scanner`直接读取字符流或文件，可解析基本类型（如int、double），适用于用户输入、简单文本解析。
+  - 通过Socket与服务端交互：Socket是网络通信的端点，用于在不同设备或进程间传输数据，通过IP地址和端口号建立连接（如`localhost:8888`）。`socket.getInputStream()`获取从服务端接收数据的字节输入流，客户端通过此流读取服务端返回的响应。`socket.getOutputStream()`获取向服务端发送数据的字节输出流，客户端通过此流发送SQL命令。
+```java
+// Socket 读写代码逻辑解析
+// 创建 Socket 的读写流
+BufferedReader socketReader = new BufferedReader(
+    new InputStreamReader(socket.getInputStream())
+);
+BufferedWriter socketWriter = new BufferedWriter(
+    new OutputStreamWriter(socket.getOutputStream())
+);
+
+// handleNextCommand()方法解析
+// 循环处理命令（直到线程被中断）
+while (!Thread.interrupted()) {
+    handleNextCommand(input, socketReader, socketWriter);
+}
+
+private static void handleNextCommand(...) throws IOException {
+    // 提示用户输入命令
+    System.out.print("SQL:> ");
+    String command = commandLine.readLine(); // 读取用户输入的命令
+
+    // 发送命令到服务端
+    socketWriter.write(command + "\n");
+    socketWriter.flush(); // 强制刷新缓冲区，确保命令立即发送
+
+    // 读取服务端响应
+    String incomingMessage = socketReader.readLine();
+
+    // 处理响应
+    if (incomingMessage == null) {
+        throw new IOException("Server disconnected");
+    }
+
+    // 持续读取响应，直到遇到结束符 EOT (ASCII 4)
+    while (incomingMessage != null && !incomingMessage.contains("" + END_OF_TRANSMISSION)) {
+        System.out.println(incomingMessage); // 打印响应行
+        incomingMessage = socketReader.readLine(); // 继续读取下一行
+    }
+}
+```
+
+3. ExampleDBTests：JUnit测试类：自动化测试。
+
+4. 运行逻辑：
+  - 服务端启动：运行`DBServer.main()`，启动后：
+    - 创建`databases`文件夹。
+    - 在`8888`端口监听客户端链接。
+    - 收到命令后调用`handleCommand()`处理。
+  - 客户端使用：运行`DBClient.main()`，启动后：
+    - 连接`localhost:8888`。
+    - 输入SQL命令并发送到服务端。
+    - 显示服务端返回的响应。
+
+
+## TODO指南
+
+### Task 3实现文件存储
+
+1. 确定文件结构：每个数据库对应一个文件夹，后缀都存为`.tab`文件，比如`people.tab`、`orders.tab`。
+2. 文件内容实例，用TAB分隔开，每个文件的开头列都是`id`:
+```
+id  Name    Age
+1   Alice   30
+2   Bob     25
+```
+3. 根据作业要求，数据需要存储在`databases`文件夹中，可以先实现一个简单的文件读写功能，能确保读取和写入`.tab`文件。
+4. 建议做法：可以创建一个`Database`的类，属性包含`name`、一个哈希表`tables`：键为表的名字，值为`Table`；创建一个`Table` Class，类的属性可以包含下一个`id`的值`nextId`、字符串列表`colNames`、存`Row`的列表`rows`、对应的`.tab`文件`dataFile`，可以创建两个方法分别读取和写入文件，比如， 类的方法可以包含`public void loadFromFile()`用来读取文件，解析列和行，`public void saveToFile()`用来将解析的数据写回文件，变成标准的格式；一个`Row`的类，属性包含整数`id`、哈希表`data`：键为列名，值为行数据的值。
+5. 具体做法步骤：
+  - 类结构层次：Database表示一个数据库，包含多个表。Table表示一个表，包含列名、行数据等信息。Row表示表中的一行数据。
+  - 创建`Row`类：它包含一个`id`和一个`HashMap`用于存储列名和对应的值。
+  - 创建`Table`类：它包含列名、行数据、下一个`id`值以及对应的`.tab`文件。
+
+### Task 4表之间的关联
+
+1. 表和表之间通过主键和外键来实现，外键是另一个表中的主键，通常是`id`。
+2. 每个表中的每条记录的`id`必须是唯一的，并且在数据库运行期间不能更改，即使某条记录被删除，它的`id`也不能重新分配给新的行数据。
+3. 建议做法：
+  - 在表中添加一个属性作为外键和一个属性储存外键引用自哪个表格，默认为null如果有则带入值。
+  - 在插入或更新记录时，检查外键引用的`id`是否有效，如果外键引用不存在，返回错误信息。
+  - 查询语言中，支持通过外键进行查询。
+
+### Task 5数据库结构设计
+
+1. 现在已经有了Row和Table类，添加一个Database类来管理多个表，Database类属性包含数据库名字和一个哈希表存储Tables。
+
+### Task 7-8解析查询语言
+
+1. 此任务需要实现一个简答的像SQL查询语言的解析器，处理客户端发送的命令并执行相应操作。
+2. 需要实现以下核心组件：
+  - Tokeniser：将用户输入的命令拆分为`token`。
+  - Paser：根据`token`解析命令，构建对应的命令对象。
+  - DBcmd：抽象类，表示所有命令的基类。
+  - 具体命令类：比如`SelectCMD`、`AlterCMD`等，这些具体的类都继承自`DBcmd`，实现具体的命令逻辑。
+  - DBserver：接收客户端命令，调用Tokeniser和Parser解析命令，并执行对应的命令。
+3. 本任务的命令规则梳理与使用方式，注意所有命令最后都需要加分号`;`。
+  - USE：切换数据库，使后续查询在指定的数据库中执行。
+```sql
+// 语法："USE " [DatabaseName]
+USE my_database;
+```
+
+  - CREATE
+    - CREATE DATABASE：创建一个新的数据库。
+    - CREATE TABLE：创建一个新的表，可以指定列名。
+```sql
+// 语法："CREATE " "DATABASE " [DatabaseName]
+CREATE DATABASE student_db;
+
+// 语法："CREATE " "TABLE " [TableName]|"CREATE " "TABLE " [TableName] "(" <AttributeList> ")"
+// <AttributeList> ::= [AttributeName] | [AttributeName] "," <AttributeList>
+CREATE TABLE students (id, name, mark);
+```
+
+  - DROP
+    - DROP DATABASE：删除整个数据库。
+    - DROP TABLE：删除整个表，会删除所有数据。
+```sql
+// 语法："DROP " "DATABASE " [DatabaseName]
+DROP DATABASE students_db;
+
+// 语法："DROP " "TABLE " [TableName]
+DROP TABLE students;
+```
+
+  - ALTER：修改表table的结构。
+    - ADD添加列，DROP删除列。
+```sql
+// 语法："ALTER " "TABLE " [TableName] " " <AlterationType> " " [AttributeName]
+// <AlterationType> ::= "ADD" | "DROP"
+ALTER TABLE students ADD email;
+
+ALTER TABLE students DROP age;
+```
+
+  - INSERT：向表中插入新数据。
+```sql
+// 语法"INSERT " "INTO " [TableName] " VALUES" "(" <ValueList> ")"
+// <ValueList> ::= [Value] | [Value] "," <ValueList>
+// [Value] ::= "'" [StringLiteral] "'" | [BooleanLiteral] | [FloatLiteral] | [IntegerLiteral] | "NULL"
+// [StringLiteral] ::= "" | [CharLiteral] | [StringLiteral] [CharLiteral]
+// [CharLiteral]     ::=  [Space] | [Letter] | [Symbol] | [Digit]
+// [BooleanLiteral]  ::=  "TRUE" | "FALSE"
+INSERT INTO students VALUES (1, 'Alice', 22);
+```
+
+  - SELECT
+    - 用于查询数据。
+    - WHERE用于过滤查询条件，支持AND和OR逻辑。
+```sql
+// 语法：<Select> ::= "SELECT " <WildAttribList> " FROM " [TableName] | "SELECT " <WildAttribList> " FROM " [TableName] " WHERE " <Condition>
+// <WildAttribList> ::= <AttributeList> | "*"
+// <Condition> ::= "(" <Condition> ")" | <FirstCondition> <BoolOperator> <SecondCondition> | [AttributeName] <Comparator> [Value]
+// <BoolOperator> ::= "AND" | "OR"
+// <Comparator> ::= "==" | ">" | "<" | ">=" | "<=" | "!=" | " LIKE "
+SELECT * FROM students;
+
+SELECT * FROM students WHERE name != 'Sion';
+
+SELECT * FROM students WHERE (pass == FALSE) AND (mark > 35);
+
+SELECT * FROM students WHERE name LIKE 'i'; // 名字里面包含字母i的
+
+SELECT id FROM students WHERE pass == FALSE;
+```
+
+  - UPDATE：用于修改表中的数据。
+```sql
+// 语法："UPDATE " [TableName] " SET " <NameValueList> " WHERE " <Condition>
+// <NameValueList> ::= <NameValuePair> | <NameValuePair> "," <NameValueList>
+// <NameValuePair> ::= [AttributeName] "=" [Value]
+
+UPDATE students SET age = 23 WHERE name = 'Alice';
+
+UPDATE students SET name = 'Robert', age = 26 WHERE id = 2;
+```
+
+  - DELETE：删除满足条件的行。
+```sql
+// 语法："DELETE " "FROM " [TableName] " WHERE " <Condition>
+
+DELETE FROM students WHERE age < 18;
+```
+
+  - JOIN：连接两个表，并基于给定列进行匹配，具体例子可以看resources文件夹里的给的[示例脚本](resources/example-transcript.docx)。
+```sql
+// 语法："JOIN " [TableName] " AND " [TableName] " ON " [AttributeName] " AND " [AttributeName]，第一个属性是属于第一个表格的，第二个属性是第二个表里的，可以想象成第一个表里的属性是外键，引用与第二个表格。
+
+JOIN coursework AND students ON submission AND id;
+```
+
+**注意事项：**
+  - SQL关键字不区分大小写，关键字例子里面大写的字。
+  - SQL关键字不能用作数据名，表名或列名，若用了，服务器应返回错误，关键字有`USE, CREATE, DROP, ALTER, INSERT, INTO, VALUES, SELECT, FROM, WHERE, UPDATE, SET, DELETE, JOIN, ON, AND, OR, LIKE, TRUE, FALSE, NULL, TABLE, DATABASE, ADD`。
+  - 所有数九都储存成字符串，不需要实现复杂的数据类型系统。
+  - 如果比较的左右两边类型不同时，不返回错误，返回空结果，比如`firstName > 12`，名字和数字没法比较，返回空结果。
+  - `LIKE`仅用于字符串，提供简单的子字符串匹配，不支持正则表达式。
+  - JOIN查询中，表的顺序必须与属性的顺序一致：
+```sql
+JOIN tableOne AND tableTwo ON attributeFromTableOne AND attributeFromTableTwo;
+```
+  - JOIN结果表的列名格式为`OriginalTableName.AttributeName`，结果表不应包含原始表的id列，而是生成新的id列。
+  - SELECT返回的列顺序应与查询中指定的顺序一致，要是查询的`*`应按照表中列的顺序返回数据。
+
+4. 实现类：
+  - Tokeniser：
+    - 此类的任务是将用户输入命令拆分为`token`，这是命令的最小单元。
+  - Parser：
+    - 根据`token`解析命令，并构建对应的命令对象。
+  
+
+
+### 查询解析与执行
+
+1. BNF语法解析：根据提供的BNF规则解析SQL命令，比如：
+```
+CREATE DATABASE mydb;
+USE mydb;
+CREATE TABLE people (Name, Age);
+INSERT INTO people VALUES ('Alice', 30);
+SELECT * FROM people WHERE Age > 25;
+```
+2. 建议做法：可以创建一个解析器的类。
+
+### 错误处理
+
+1. 统一响应格式：所有响应必须以`[OK]`或`[ERROR]`开头。
+
+
+做了个笔记你们可以看一下
